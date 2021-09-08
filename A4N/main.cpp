@@ -79,7 +79,7 @@ public:
 
     ~NodeAttributeStorage() {
         invalidateAttribute();
-        // std::cerr<<"storage deleted\n";
+        std::cerr<<"storage deleted\n";
     }
     
     void invalidateAttribute() override {
@@ -325,7 +325,7 @@ int main() {
 
     Graph G;
     
-    auto colors = G.nodeAttributes().attach<int>  ("color");
+    auto colors = G.nodeAttributes().attach<int>("color");
     auto coords { G.nodeAttributes().attach<Point>("Coordinates") };
     
     // auto colors2 = colors;
@@ -368,11 +368,21 @@ int main() {
         std::cerr << ++i << ":\tx = "<<(*it).x<<"\t y = "<<(*it).y<<"\n";
     }
     
-    // Maybe nicer: operator[]
+    // Maybe nicer: operator[]: DONE
 
-    // TODO: Deletion of attributes
-    // TODO: Iterators over all attributes
-    // TODO: Minimal Python interface (but not necessarily convenient functions etc.)
+    // TODO: Deletion of attributes: DONE
+    // TODO: Iterators over all attributes: DONE
+    //       all iterations should go only through
+    //       valid elements (even when there a more
+    //       values 0-allocated)  but their (node-)indicies
+    //       are not stored and as such not available while
+    //       iterating
+    //       WHAT IS THE BEST WAY TO HANDLE THIS?
+    // TODO: Minimal Python interface (but not necessarily
+    //       convenient functions etc.): NEXT STEP with
+    //       first networkit integration, first i'd like
+    //       to discuss/rate/improve/change the current
+    //       setup
 
     // Later, after minimal PR:
     // TODO: Attributes for edges
@@ -386,17 +396,22 @@ int main() {
     
     std::vector<Point> save(coords.size());
     
-    //Whatis<decltype(coords.begin())> w;
     std::copy(coords.begin(), coords.end(), save.begin());
     i=0;
     for (auto p : save){
+        // i is NOT the node index !
         std::cout<<i++<<" "<<p.x<<" "<<p.y<<"\n";
     }
     G.nodeAttributes().detach("Coordinates");
+    
+    // auto y = coords[21]; fails with "Invalid attribute"
     auto c1 = G.nodeAttributes().attach<double>("Coordinates");
     c1[100] = 333.33;
     std::cerr<<c1[100]<<"\n";
     colors[0] = 33;
     std::cerr<<colors[0]<<"\n";
+    for(auto c: c1) {
+        std::cout<<c<<"\n";
+    }
     G.nodeAttributes().enumerate();
 }
