@@ -199,7 +199,7 @@ public:
     }
     
     auto end() {
-        return Iterator{nullptr};
+        return Iterator(nullptr);
     }
     
     auto size() {
@@ -397,6 +397,33 @@ int main() {
     std::vector<Point> save(coords.size());
     
     std::copy(coords.begin(), coords.end(), save.begin());
+    
+/*  this works with my XCode, but with none of most other
+    compilers: i get instantiation errors in copy and assume
+    they try to use a memcpy-variant, for which
+    iterator_traits-infos are missing ... moreover usual
+    (sequential) iterators can measure the diff end-begin
+ 
+    but this iterator is non-sequential by design !?
+ 
+ a user defined copy as:
+ 
+ template<class InputIt, class OutputIt>
+ OutputIt copy(InputIt first, InputIt last,
+               OutputIt d_first)
+ {
+     while (first != last) {
+         *d_first = *first;
+         ++d_first; ++first; // no op++(int) just now
+     }
+     return d_first;
+ }
+ 
+ will even report conflicts with std::copy (wich seems to
+ be visible without std:: on some systems)
+ 
+ naming it Copy works - any idea ?
+ */
     i=0;
     for (auto p : save){
         // i is NOT the node index !
