@@ -114,6 +114,10 @@ private:
     NodeAttribute<T>* myAttribute;
 };
 
+// renamed NodeAttributeView -> NodeAttribute
+// a View should be read only, but this allows
+// writing (set and op[]) - in some sense it is
+// the attribute itself
 
 template<typename T>
 class NodeAttribute {
@@ -213,7 +217,7 @@ public:
        storage is deleted)
      
        to cope with a weird RVO bug in some compilers
-       (doing a hidden copy anyway - even when deleted)
+       (doing a hidden copy/move anyway - even when deleted)
        any copy is marked invalid
      */
 
@@ -249,7 +253,7 @@ private:
     friend NodeAttributeStorage<T>;
 };
 
-class Graph {
+class Graph { // (substitute)
     
     class NodeAttributeMap {
         std::unordered_map<
