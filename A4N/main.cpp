@@ -13,7 +13,10 @@ namespace Attributes {
 using index = size_t;
 
 template <typename T>
-class NodeAttributeView;
+class NodeAttribute;
+
+template <typename>
+class Whatis;
 
 // Base class for all node attributes.
 class NodeAttributeStorageBase {
@@ -23,7 +26,7 @@ public:
 
     virtual ~NodeAttributeStorageBase() = default;
 
-    virtual void invalidateView() = 0;
+    virtual void invalidateAttribute() = 0;
     
     std::string_view getName() {
         return name;
@@ -42,6 +45,7 @@ public:
         if(i < valid.size()) {
             valid[i] = false;
         }
+        --validElements;
     }
 
 protected:
@@ -50,6 +54,7 @@ protected:
             valid.resize(i + 1);
         }
         valid[i] = true;
+        ++validElements;
     }
     
     void checkIndex(index i) {
@@ -62,26 +67,33 @@ private:
     std::string name;
     std::type_index type;
     std::vector<bool> valid; // For each node: whether attribute is set or not.
+protected:
+    index validElements = 0;
 };
 
 template<typename T>
-struct NodeAttributeStorage : NodeAttributeStorageBase {
+class NodeAttributeStorage : public NodeAttributeStorageBase {
+public:
     NodeAttributeStorage(std::string name)
     : NodeAttributeStorageBase{std::move(name), typeid(T)} { }
 
     ~NodeAttributeStorage() {
-        myView->invalidateView();
-        std::cerr<<"storage deleted\n";
+        invalidateAttribute();
+        // std::cerr<<"storage deleted\n";
     }
     
-    void invalidateView() override {
-        myView->invalidateView();
+    void invalidateAttribute() override {
+        myAttribute->invalidateAttribute();
     }
 
     void resize(index i) {
         if(i >= values.size()) {
             values.resize(i + 1);
         }
+    }
+    
+    auto size() {
+        return validElements;
     }
     
     void set(index i, T v) {
@@ -98,28 +110,15 @@ struct NodeAttributeStorage : NodeAttributeStorageBase {
     }
 private:
     std::vector<T> values;
-    friend class NodeAttributeView<T>;
-    NodeAttributeView<T>* myView;
+    friend class NodeAttribute<T>;
+    NodeAttribute<T>* myAttribute;
 };
 
-class NodeAttributeLocation {
-public:
-    explicit NodeAttributeLocation(NodeAttributeStorageBase *storage)
-    : storage{storage} { }
-
-    template<typename T>
-    NodeAttributeView<T> as();
-
-private:
-    NodeAttributeStorageBase *storage; // TODO: shared_ptr?
-};
 
 template<typename T>
-class NodeAttributeView {
+class NodeAttribute {
     
     class Iterator {
-        NodeAttributeStorage<T>* storage;
-        index idx;
     public:
         Iterator(NodeAttributeStorage<T> *storage)
         : storage{storage}, idx{0} {
@@ -164,29 +163,35 @@ class NodeAttributeView {
         bool operator!=(Iterator const& iter) {
             return !(*this==iter);
         }
+    private:
+        NodeAttributeStorage<T>* storage;
+        index idx;
     };
     
     class IndexProxy {
-        NodeAttributeStorage<T>* storage;
-        index idx;
     public:
         IndexProxy(NodeAttributeStorage<T> *storage, index idx)
         : storage{storage}, idx{idx} {}
         
-        operator T() { // reading at idx
+        // reading at idx
+        operator T() {
             storage->checkIndex(idx);
             return storage->values[idx];
         }
         
-        T& operator=(T const& other) { // writing at idx
+        // writing at idx
+        T& operator=(T const& other) {
             storage->set(idx, std::move(other));
             return storage->values[idx];
         }
+    private:
+        NodeAttributeStorage<T>* storage;
+        index idx;
     };
 public:
-    explicit NodeAttributeView(NodeAttributeStorage<T> *storage)
+    explicit NodeAttribute(NodeAttributeStorage<T> *storage)
     : storage{storage} {
-        storage->myView = this;
+        storage->myAttribute = this;
     }
     
     auto begin() {
@@ -197,80 +202,71 @@ public:
         return Iterator{nullptr};
     }
     
-    NodeAttributeView(NodeAttributeView const & v)
-    : storage{v.storage}, valid{v.valid} {};
+    auto size() {
+        return storage->size();
+    }
+    
+    NodeAttribute(NodeAttribute const & v) // = delete;
+    : storage{nullptr}, valid{false} {};
+    /* ideally copies should be prohibited (there is only one
+       valid 'View' which is invalidated when the underlying
+       storage is deleted)
+     
+       to cope with a weird RVO bug in some compilers
+       (doing a hidden copy anyway - even when deleted)
+       any copy is marked invalid
+     */
 
     void set(index i, T v) {
-        checkView();
+        checkAttribute();
         return storage->set(i, std::move(v));
     }
     
     auto get(index i) {
-        checkView();
+        checkAttribute();
         storage->checkIndex(i);
         return storage->get(i);
     }
     
     IndexProxy operator[](index i) {
-        checkView();
+        checkAttribute();
         return IndexProxy(storage, i);
     }
 
-    void checkView() {
+    void checkAttribute() {
         if (!valid) {
-            throw std::runtime_error("Invalid attribute view");
+            throw std::runtime_error("Invalid attribute");
         }
     }
-    
-    void invalidateView() {
+private:
+    void invalidateAttribute() {
         valid = false;
     }
     
 private:
     NodeAttributeStorage<T> *storage; // TODO: shared_ptr?
     bool valid = true;
+    friend NodeAttributeStorage<T>;
 };
-
-/*
- i tried to do an explicit invalidation of views:
- 
- you already had a solution which makes 'as' (with its double
- type check) unnecessary: just return the (only) view with the
- attribute attachment
- 
- i think it is ok, that every attribute has a unique view
- but i see different view addresses with my local Xcode
- and in godbolt up to gcc 7.5 ... corrupting my view invalidation
- 
- compiler bug? any idea?
-
- maybe, doing every view access with an additional check is bad
- in the first place,
- 
- it should be ok, that (without these tedious checks) accessing
- a view after deleting the attribute could gives UB anyway
- 
- the other option (shared_ptr) is not semantically correct either:
- after attribute deletion there should no access of a zombie view
- be allowed !?
- 
- */
-
-template<typename T>
-NodeAttributeView<T> NodeAttributeLocation::as() {
-    auto type = storage->getType();
-    if(type != typeid(T)) {
-        throw std::runtime_error("Type mismatch in Attribute::as()");
-    }
-    return NodeAttributeView<T>{static_cast<NodeAttributeStorage<T> *>(storage)};
-}
 
 class Graph {
     
-    class NodeAttributes {
+    class NodeAttributeMap {
         std::unordered_map<
             std::string_view,
         // TODO: Maybe shared_ptr instead so that views do not become invalid after attribute is deleted?
+        /*
+           decision, not TODO this because:
+           
+           one attribute storage [NodeAttributeStorageBase] should be
+           accessed by only one accessor [NodeAttribute] so the latter
+           can be invalidated when the storage deceases,
+         
+           with shared_ptr it's unknown who the last accessor is, which
+           has to be invalided !
+         
+           for getting storage heritage we could do a (e.g. vector) copy before
+         */
             std::unique_ptr<NodeAttributeStorageBase>
         > attrMap;
     
@@ -285,7 +281,7 @@ class Graph {
     
         template<typename T>
         [[nodiscard]]
-        NodeAttributeView<T> attach(std::string_view name) {
+        NodeAttribute<T> attach(std::string_view name) {
             auto ownedPtr = std::make_unique<NodeAttributeStorage<T>>(std::string{name});
             auto borrowedPtr = ownedPtr.get();
             auto [it, success] = attrMap.insert(
@@ -293,28 +289,23 @@ class Graph {
             if(!success) {
                 throw std::runtime_error("Attribute with same name already exists");
             }
-            return NodeAttributeView<T>{borrowedPtr};
+            return NodeAttribute<T>{borrowedPtr};
         }
         
         void detach(std::string_view name) {
             auto it = find(name);
             auto storage = it->second.get();
-            storage->invalidateView();
+            storage->invalidateAttribute();
             it->second.reset();
             attrMap.erase(name);
         }
 
-        NodeAttributeLocation getNodeAttribute(std::string_view name) {
-            auto it = find(name);
-            return NodeAttributeLocation{it->second.get()};
-        }
-    
         void enumerate() {
             for (auto& [name, ptr] : attrMap) {
                 std::cout<<name<<"\n";
             }
         }
-    } nodeAttrs; //class NodeAttributes
+    } nodeAttrs; //class NodeAttributeMap
 public:
     auto& nodeAttributes() { return nodeAttrs; }
 }; // class Graph (substitute)
@@ -334,11 +325,13 @@ int main() {
 
     Graph G;
     
-    auto colors = G.nodeAttributes().attach<int>("color");
+    auto colors = G.nodeAttributes().attach<int>  ("color");
     auto coords { G.nodeAttributes().attach<Point>("Coordinates") };
-   
-    auto p = Point{42, 43};
-    coords[210] = coords[211] = p;
+    
+    // auto colors2 = colors;
+    // colors2.set(0, 3);
+    auto p = Point{41, 42};
+    coords[21] = coords[25] = p;
 /*
    index acces can differentiate between read and write access
    by IndexProxy:
@@ -349,10 +342,10 @@ int main() {
                                 an explicit typecast
     
  */
-    coords.set(21, p);
-    Point p210 = coords[210];
-    std::cout << "coords[210].x = " << p210.x << std::endl;
-    std::cout << "coords[210].y = " << Point(coords[210]).y << std::endl;
+    coords.set(22, p);
+    Point p22 = coords[22];
+    std::cout << "coords[22].x = " << p22.x << std::endl;
+    std::cout << "coords[22].y = " << Point(coords[22]).y << std::endl;
     
     auto x = coords.get(21);
     if (x)
@@ -361,15 +354,18 @@ int main() {
         std::cerr<<"no value\n";
     // Whatis<decltype(x)> what;
 
+    /*
     for (auto& c : coords){
         c.x = c.y = 666;
     }
+    */
+    
     for (auto c : coords){
         std::cout<<"x = "<<c.x<<"\t y = "<<c.y<<"\n";
     }
-
+    auto i = 0;
     for (auto it = coords.begin(); it != coords.end(); ++it){
-        std::cerr << "x = "<<(*it).x<<"\t y = "<<(*it).y<<"\n";
+        std::cerr << ++i << ":\tx = "<<(*it).x<<"\t y = "<<(*it).y<<"\n";
     }
     
     // Maybe nicer: operator[]
@@ -387,6 +383,15 @@ int main() {
     //       User needs to pass functions to serialize complicated classes?
     //       Want to integrate an existing serialization framework?
     // TODO: In Python: maybe "virtual" interface without .as()?
+    
+    std::vector<Point> save(coords.size());
+    
+    //Whatis<decltype(coords.begin())> w;
+    std::copy(coords.begin(), coords.end(), save.begin());
+    i=0;
+    for (auto p : save){
+        std::cout<<i++<<" "<<p.x<<" "<<p.y<<"\n";
+    }
     G.nodeAttributes().detach("Coordinates");
     auto c1 = G.nodeAttributes().attach<double>("Coordinates");
     c1[100] = 333.33;
