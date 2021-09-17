@@ -6,6 +6,7 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Attributes {
@@ -26,7 +27,7 @@ public:
 
     virtual ~NodeAttributeStorageBase() = default;
 
-    virtual void invalidateAttribute() = 0;
+    virtual void invalidateAttributes() = 0;
     
     std::string_view getName() {
         return name;
@@ -77,13 +78,13 @@ public:
     NodeAttributeStorage(std::string name)
     : NodeAttributeStorageBase{std::move(name), typeid(T)} { }
 
-    ~NodeAttributeStorage() {
-        invalidateAttribute();
+    ~NodeAttributeStorage() override {
+        invalidateAttributes();
         std::cerr<<"storage deleted\n";
     }
     
-    void invalidateAttribute() override {
-        myAttribute->invalidateAttribute();
+    void invalidateAttributes() override {
+        for (auto att: attrSet) att->invalidateAttribute();
     }
 
     void resize(index i) {
@@ -111,7 +112,7 @@ public:
 private:
     std::vector<T> values;
     friend class NodeAttribute<T>;
-    NodeAttribute<T>* myAttribute;
+    std::unordered_set<NodeAttribute<T>*> attrSet;
 };
 
 // renamed NodeAttributeView -> NodeAttribute
@@ -193,13 +194,24 @@ class NodeAttribute {
         index idx;
     };
 public:
-    explicit NodeAttribute(NodeAttributeStorage<T> *storage)
-    : storage{storage} {
-        storage->myAttribute = this;
+    explicit NodeAttribute(std::shared_ptr<NodeAttributeStorage<T>> owned_storage)
+    : owned_storage{owned_storage}, valid{true} {
+        std::cerr<<"NodeAttribute ("<<owned_storage->getName()<<") at "<<this<<"\n";
+        owned_storage->attrSet.insert(this);
+    }
+    
+    NodeAttribute(NodeAttribute const& other)
+    : owned_storage{other.owned_storage}, valid{other.valid} {
+        owned_storage->attrSet.insert(this);
+    }
+    
+    ~NodeAttribute() {
+        owned_storage->attrSet.erase(this);
+        std::cerr<<"NodeAttribute ("<<owned_storage->getName()<<") at "<<this<<" deleted\n";
     }
     
     auto begin() {
-        return Iterator(storage).nextValid();
+        return Iterator(owned_storage.get()).nextValid();
     }
     
     auto end() {
@@ -207,34 +219,22 @@ public:
     }
     
     auto size() {
-        return storage->size();
+        return owned_storage->size();
     }
-    
-    NodeAttribute(NodeAttribute const & v) // = delete;
-    : storage{nullptr}, valid{false} {};
-    /* ideally copies should be prohibited (there is only one
-       valid 'View' which is invalidated when the underlying
-       storage is deleted)
-     
-       to cope with a weird RVO bug in some compilers
-       (doing a hidden copy/move anyway - even when deleted)
-       any copy is marked invalid
-     */
 
     void set(index i, T v) {
         checkAttribute();
-        return storage->set(i, std::move(v));
+        return owned_storage->set(i, std::move(v));
     }
     
     auto get(index i) {
         checkAttribute();
-        storage->checkIndex(i);
-        return storage->get(i);
+        return owned_storage->get(i);
     }
     
     IndexProxy operator[](index i) {
         checkAttribute();
-        return IndexProxy(storage, i);
+        return IndexProxy(owned_storage.get(), i);
     }
 
     void checkAttribute() {
@@ -248,8 +248,8 @@ private:
     }
     
 private:
-    NodeAttributeStorage<T> *storage; // TODO: shared_ptr?
-    bool valid = true;
+    std::shared_ptr<NodeAttributeStorage<T>> owned_storage;
+    bool valid;
     friend NodeAttributeStorage<T>;
 };
 
@@ -258,20 +258,7 @@ class Graph { // (substitute)
     class NodeAttributeMap {
         std::unordered_map<
             std::string_view,
-        // TODO: Maybe shared_ptr instead so that views do not become invalid after attribute is deleted?
-        /*
-           decision, not TODO this because:
-           
-           one attribute storage [NodeAttributeStorageBase] should be
-           accessed by only one accessor [NodeAttribute] so the latter
-           can be invalidated when the storage deceases,
-         
-           with shared_ptr it's unknown who the last accessor is, which
-           has to be invalided !
-         
-           for getting storage heritage we could do a (e.g. vector) copy before
-         */
-            std::unique_ptr<NodeAttributeStorageBase>
+            std::shared_ptr<NodeAttributeStorageBase>
         > attrMap;
     
     public:
@@ -284,24 +271,29 @@ class Graph { // (substitute)
         }
     
         template<typename T>
-        [[nodiscard]]
-        NodeAttribute<T> attach(std::string_view name) {
-            auto ownedPtr = std::make_unique<NodeAttributeStorage<T>>(std::string{name});
-            auto borrowedPtr = ownedPtr.get();
+        auto attach(std::string_view name) {
+            auto ownedPtr = std::make_shared<NodeAttributeStorage<T>>(std::string{name});
             auto [it, success] = attrMap.insert(
-                                std::make_pair(borrowedPtr->getName(), std::move(ownedPtr)));
+                                std::make_pair(ownedPtr->getName(), ownedPtr));
             if(!success) {
                 throw std::runtime_error("Attribute with same name already exists");
             }
-            return NodeAttribute<T>{borrowedPtr};
+            return NodeAttribute<T>{ownedPtr};
         }
         
         void detach(std::string_view name) {
             auto it = find(name);
             auto storage = it->second.get();
-            storage->invalidateAttribute();
+            storage->invalidateAttributes();
             it->second.reset();
             attrMap.erase(name);
+        }
+        template<typename T>
+        auto get(std::string_view name) {
+            auto it = find(name);
+            if (it->second.get()->getType() != typeid(T))
+                throw std::runtime_error("Type mismatch in nodeAttributes().get()");
+            return NodeAttribute<T>{std::static_pointer_cast<NodeAttributeStorage<T>>(it->second)};
         }
 
         void enumerate() {
@@ -331,7 +323,9 @@ int main() {
     
     auto colors = G.nodeAttributes().attach<int>("color");
     auto coords { G.nodeAttributes().attach<Point>("Coordinates") };
-    
+    auto coord2 { G.nodeAttributes().get<Point>("Coordinates") };
+
+    // auto coo2 = coords;
     // auto colors2 = colors;
     // colors2.set(0, 3);
     auto p = Point{41, 42};
@@ -351,7 +345,7 @@ int main() {
     std::cout << "coords[22].x = " << p22.x << std::endl;
     std::cout << "coords[22].y = " << Point(coords[22]).y << std::endl;
     
-    auto x = coords.get(21);
+    auto x = coords.get(23);
     if (x)
         std::cerr<<(*x).x<<"\n";
     else
@@ -398,11 +392,13 @@ int main() {
     //       Want to integrate an existing serialization framework?
     // TODO: In Python: maybe "virtual" interface without .as()?
     
+    /*
+     
     std::vector<Point> save(coords.size());
     
     std::copy(coords.begin(), coords.end(), save.begin());
     
-/*  this works with my XCode, but with none of most other
+    this works with my XCode, but with none of most other
     compilers: i get instantiation errors in copy and assume
     they try to use a memcpy-variant, for which
     iterator_traits-infos are missing ... moreover usual
@@ -427,18 +423,21 @@ int main() {
  be visible without std:: on some systems)
  
  naming it Copy works - any idea ?
- */
+
     i=0;
     for (auto p : save){
         // i is NOT the node index !
         std::cout<<i++<<" "<<p.x<<" "<<p.y<<"\n";
     }
+*/
+    
     G.nodeAttributes().detach("Coordinates");
     
-    // auto y = coords[21]; fails with "Invalid attribute"
     auto c1 = G.nodeAttributes().attach<double>("Coordinates");
-    c1[100] = 333.33;
-    std::cerr<<c1[100]<<"\n";
+    c1[0] = 333.33;
+    std::cerr<<c1[0]<<"\n";
+    // auto y = coo2[0]; // fails with "Invalid attribute"
+
     colors[0] = 33;
     std::cerr<<colors[0]<<"\n";
     for(auto c: c1) {
