@@ -1,4 +1,6 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 #include "Attributes.hpp"
 
@@ -9,12 +11,6 @@ class Graph { // (substitute)
 public:
     auto& nodeAttributes() { return nodeAttrs; }
 }; // class Graph (substitute)
-
-} // namespace Attributes
-
-#include <iostream>
-
-using namespace Attributes;
 
 struct Point {
     double x;
@@ -32,8 +28,9 @@ int main() {
     // auto coo2 = coords;
     // auto colors2 = colors;
     // colors2.set(0, 3);
-    auto p = Point{41, 42};
-    coords[21] = coords[25] = p;
+    auto p = Point{21, 42};
+    coords[21] = p;
+    coords[25] = Point{25, 50};
 /*
    index acces can differentiate between read and write access
    by IndexProxy:
@@ -44,7 +41,7 @@ int main() {
                                 an explicit typecast
     
  */
-    coords.set(22, p);
+    coords.set(22, Point{22,44});
     Point p22 = coords[22];
     std::cout << "coords[22].x = " << p22.x << std::endl;
     std::cout << "coords[22].y = " << Point(coords[22]).y << std::endl;
@@ -54,14 +51,7 @@ int main() {
         std::cerr<<(*x).x<<"\n";
     else
         std::cerr<<"no value\n";
-    // Whatis<decltype(x)> what;
-
-    /*
-    for (auto& c : coords){
-        c.x = c.y = 666;
-    }
-    */
-    
+  
     for (auto c : coords){
         std::cout<<"x = "<<c.x<<"\t y = "<<c.y<<"\n";
     }
@@ -134,18 +124,41 @@ int main() {
         std::cout<<i++<<" "<<p.x<<" "<<p.y<<"\n";
     }
 */
+    std::string filename{"coords.txt"};
+    
+    std::ofstream out(filename);
+    if (!out)
+        std::cerr<<"cannot open "<<filename<<" for writing\n";
+    
+    for (auto it = coords.begin(); it != coords.end(); ++it){
+        auto [n,v] = it.nodeValuePair();
+        out << n << "\t" << v.x << "\t" << v.y <<"\n";
+    }
+    out.close();
     
     G.nodeAttributes().detach("Coordinates");
     
-    auto c1 = G.nodeAttributes().attach<double>("Coordinates");
-    c1[0] = 333.33;
-    std::cerr<<c1[0]<<"\n";
-    // auto y = coo2[0]; // fails with "Invalid attribute"
-
-    colors[0] = 33;
-    std::cerr<<colors[0]<<"\n";
+    auto c1 = G.nodeAttributes().attach<Point>("Coordinates");
+    
+    std::ifstream in(filename);
+    if (!in) {
+        std::cerr<<"cannot open "<<filename<<" for reading\n";
+    }
+    while (true) {
+        int n;
+        double x, y;
+        std::string line;
+        std::getline(in, line);
+        if (!in) break;
+        std::istringstream istring(line);
+        istring>>n>>x>>y;
+        std::cout<<"got: "<<n<<" "<<x<<" "<<y<<"\n";
+        Point p = {x,y};
+        c1[n] = p;
+    }
+    
     for(auto c: c1) {
-        std::cout<<c<<"\n";
+        std::cout<<c.x<<" "<<c.y<<"\n";
     }
     G.nodeAttributes().enumerate();
 }
