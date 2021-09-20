@@ -86,7 +86,7 @@ public:
     
     ~NodeAttributeStorage() override {
         invalidateAttributes();
-        std::cerr<<"storage deleted\n";
+        // std::cerr<<"storage deleted\n";
     }
     
     void invalidateAttributes() override {
@@ -292,6 +292,7 @@ public:
         it->second.reset();
         attrMap.erase(name);
     }
+    
     template<typename T>
     auto get(std::string_view name) {
         auto it = find(name);
